@@ -1,0 +1,7 @@
+uvicorn~=0.34.0
+fastapi~=0.115.12
+yfinance~=0.2.55
+pandas~=2.2.3
+rich~=13.9.4
+finnhub-python~=2.4.23
+gnews~=0.4.1
