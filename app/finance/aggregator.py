@@ -1,6 +1,7 @@
 # Created by Ryan Polasky - 3/23/25
 # All Rights Reserved
 
+import requests
 import yfinance as yf
 import finnhub
 import pandas as pd
@@ -11,8 +12,15 @@ from datetime import datetime, timedelta
 import os
 import json
 
-finnhub_api_key: str = os.environ.get('FINNHUB_API_KEY')
-finnhub_client = finnhub.Client(api_key=api_key)
+# Securely get the API key and handle if it's not set
+try:
+    finnhub_api_key = os.environ['FINNHUB_API_KEY']
+    finnhub_client = finnhub.Client(api_key=finnhub_api_key)
+except KeyError:
+    rprint("[bold red]Error: The 'FINNHUB_API_KEY' environment variable is not set.[/bold red]")
+    rprint("Please set it to your Finnhub API key.")
+    exit()  # Exit the script if the key is not available
+
 
 def get_historical_prices(ticker, period='max'):
     try:
@@ -21,6 +29,9 @@ def get_historical_prices(ticker, period='max'):
 
         # Get historical market data
         historical_data = stock.history(period=period)
+        if historical_data.empty:
+            rprint(f"[yellow]Warning: No historical data found for {ticker}. It may be an invalid ticker.[/yellow]")
+            return []
 
         # Convert to list of dictionaries with date and closing price
         price_data = [
@@ -30,11 +41,13 @@ def get_historical_prices(ticker, period='max'):
             }
             for index, row in historical_data.iterrows()
         ]
-
         return price_data
 
-    except Exception as e:
-        print(f"Error fetching historical prices for {ticker}: {e}")
+    except requests.exceptions.RequestException as e: # More specific network error
+        rprint(f"[bold red]Network error fetching historical prices for {ticker}: {e}[/bold red]")
+        return []
+    except Exception as e: # A fallback for other unexpected errors
+        rprint(f"[bold red]An unexpected error occurred for {ticker}: {e}[/bold red]")
         return []
 
 
@@ -42,57 +55,71 @@ def y_stock_lookup(ticker_symbol: str):
     # Try to get Yahoo Finance data on the ticker symbol
     data = yf.Ticker(ticker_symbol)
 
-    # If proper data is returned,
-    if data:
-        data_dict = data.info
+    # data.info is the dictionary we need to check
+    data_dict = data.info
 
-        refined_market_cap = refine_market_cap(data_dict['marketCap'])
-        historical_data = get_historical_prices(ticker_symbol)
+    # Check for a key that is likely to exist if the ticker is valid, like 'symbol'
+    if not data_dict or 'symbol' not in data_dict:
+        return {"error": f"No data found for ticker: {ticker_symbol}"}
 
-        refined_response = {
-            "companyName": data_dict["shortName"],
-            "tickerSymbol": data_dict["symbol"],
-            "exchange": data_dict["exchange"],
-            "sector": data_dict["sectorDisp"],
-            "marketCap": refined_market_cap,
-            "companyDescription": data_dict["longBusinessSummary"],
-            "currentPrice": f"${round(data_dict['regularMarketPrice'], 2)}",
-            "previousClosingPrice": f"${round(data_dict['previousClose'], 2)}",
-            "openPrice": f"${round(data_dict['open'], 2)}",
-            "dayHigh": f"${round(data_dict['dayHigh'], 2)}",
-            "dayLow": f"${round(data_dict['dayLow'], 2)}",
-            "yearRange": f"${round(data_dict['fiftyTwoWeekLow'], 2)} - ${round(data_dict['fiftyTwoWeekHigh'], 2)}",
-            "historicalPrices": historical_data
-        }
-        return refined_response
+    # Use .get() for safer dictionary access, providing a default value of None or "N/A"
+    refined_market_cap = refine_market_cap(data_dict.get('marketCap'))
 
-    else:  # If no data is returned,
-        return "no data for you :("
+    refined_response = {
+        "companyName": data_dict.get("shortName"),
+        "tickerSymbol": data_dict.get("symbol"),
+        "exchange": data_dict.get("exchange"),
+        "sector": data_dict.get("sectorDisp"),
+        "marketCap": refined_market_cap,
+        "companyDescription": data_dict.get("longBusinessSummary"),
+        "currentPrice": f"${round(data_dict.get('regularMarketPrice', 0), 2)}",
+        "previousClosingPrice": f"${round(data_dict.get('previousClose', 0), 2)}",
+        "openPrice": f"${round(data_dict.get('open', 0), 2)}",
+        "dayHigh": f"${round(data_dict.get('dayHigh', 0), 2)}",
+        "dayLow": f"${round(data_dict.get('dayLow', 0), 2)}",
+        "yearRange": f"${round(data_dict.get('fiftyTwoWeekLow', 0), 2)} - ${round(data_dict.get('fiftyTwoWeekHigh', 0), 2)}",
+        "historicalPrices": get_historical_prices(ticker_symbol)
+    }
+    return refined_response
 
 
-def fetch_and_prepare_all_tickers():
+def fetch_and_prepare_all_tickers(cache_duration_days=1):
     """
-    Fetch tickers and prepare them as a list of dictionaries with a rich progress bar.
+    Fetch tickers and cache them. The cache is refreshed if it's older
+    than cache_duration_days.
     """
-    exchanges = ['US']
+    tickers_file = 'tickers.json'
+
+    # Check if the file exists and how old it is
+    if os.path.exists(tickers_file):
+        file_mod_time = datetime.fromtimestamp(os.path.getmtime(tickers_file))
+        if datetime.now() - file_mod_time < timedelta(days=cache_duration_days):
+            rprint("[green]Loading tickers from local cache.[/green]")
+            with open(tickers_file, 'r') as f:
+                return json.load(f)
+
+    # If cache is old or doesn't exist, fetch from API
+    rprint("[yellow]Cache is old or missing. Fetching fresh tickers from Finnhub...[/yellow]")
+    exchanges = ['US']  # Can be expanded, e.g., ['US', 'L'] for London
     all_tickers = []
 
     for exchange in track(exchanges, description="Fetching tickers for exchanges..."):
         try:
             symbols = finnhub_client.stock_symbols(exchange)
-            for ticker in track(symbols, description=f"Processing tickers for {exchange}..."):
+            for ticker in symbols:  # No need for a second progress bar here for speed
                 all_tickers.append({
-                    "ticker_symbol": ticker["displaySymbol"],
+                    "ticker_symbol": ticker.get("displaySymbol") or ticker.get("symbol"),
                     "exchange": exchange,
-                    "company_name": ticker["description"],
+                    "company_name": ticker.get("description"),
                 })
         except Exception as e:
-            print(f"Error fetching tickers for {exchange}: {e}")
+            rprint(f"[bold red]Error fetching tickers for {exchange}: {e}[/bold red]")
 
-    with open('tickers.json', 'w') as f:
-        json.dump(list(all_tickers), f)
+    # Write the fresh data to the cache file
+    with open(tickers_file, 'w') as f:
+        json.dump(all_tickers, f, indent=4)  # Use indent for readability
 
-    return list(all_tickers)
+    return all_tickers
 
 
 def refine_market_cap(market_cap):

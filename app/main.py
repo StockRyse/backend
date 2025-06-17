@@ -7,7 +7,16 @@ import uvicorn
 from routers import stocks, market_news
 
 # Designate the actual Fast API application
-app = FastAPI()
+app = FastAPI(
+    title="StockRyse API",
+    description="A modern, high-performance API for fetching real-time and historical stock data and news.",
+    version="1.0.0",
+    contact={
+        "name": "Ryan Polasky",
+        "url": "https://www.ryanpolasky.com",
+        "email": "ryanpolasky@hotmail.com",
+    },
+)
 
 # Add CORS middleware to allow frontend requests
 # noinspection PyTypeChecker
@@ -27,11 +36,11 @@ app.include_router(market_news.router)
 
 
 # Define what happens when route path is accessed
-@app.head('/')
-def root_path():
+@app.get('/')
+async def root_path():
     return {"contents": "Thanks for checking out StockRyse :)"}
 
 
 # Start the app with Uvicorn if the Python file is run
 if __name__ == '__main__':
-    uvicorn.run("main:app", port=8000, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
